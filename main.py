@@ -405,7 +405,8 @@ def process_timeline(session, client, timeline_data):
                         file_date_prefix = f"{clean_date}_"
                 
                 # まずタイトルと本文を投稿 (IDを埋め込む)
-                main_message = f"{display_date}\n📸 *{title}*\n{overview}\n\n(ID: {item_id})"
+                # 縦の長さを節約するため、日付の後ろにIDを表示
+                main_message = f"{display_date} (ID: {item_id})\n📸 *{title}*\n{overview}"
                 client.chat_postMessage(channel=SLACK_CHANNEL_ID, text=main_message)
                 
                 for i, photo in enumerate(photos):
@@ -453,7 +454,8 @@ def process_timeline(session, client, timeline_data):
                 # ただし、upload_file_to_slackのinitial_commentはmrkdwnが効くはず
                 
                 # IDを埋め込む
-                message = f"{display_date}\n📢 *{title}*\n\n{content_text}\n\n(ID: {item_id})"
+                # 縦の長さを節約するため、日付の後ろにIDを表示
+                message = f"{display_date} (ID: {item_id})\n📢 *{title}*\n\n{content_text}"
                 
                 if file_url:
                     # 相対パスの場合は補完
