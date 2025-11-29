@@ -8,8 +8,24 @@ import argparse
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from dotenv import load_dotenv
-
 import time
+
+"""
+Codmon Timeline Fetcher
+
+コドモン（Codmon）の保護者用タイムラインから「日々の様子」や「お知らせ」を取得し、
+Slackに転送・通知するスクリプト。
+
+主な機能:
+- Codmon APIへのログインとタイムライン取得
+- 未読記事の抽出（Slackの投稿履歴を確認して重複排除）
+- 画像およびPDFのダウンロードとSlackへのアップロード
+- PDFの全ページ画像化とアップロード
+- Android版Slackの表示バグ対策（ドット挿入）
+
+Usage:
+    python main.py [--days 3]
+"""
 
 # ログ設定
 log_filename = "app.log"
@@ -126,7 +142,22 @@ def convert_pdf_to_images(pdf_content):
 
 
 def upload_file_to_slack(client, file_content, filename, title, initial_comment=None):
-    """Slackにファイルをアップロードする"""
+    """
+    Slackにファイルをアップロードする。
+    
+    files_upload_v2 メソッドを使用してファイルをアップロードする。
+    
+    Args:
+        client (WebClient): Slack WebClient
+        file_content (bytes): ファイルのバイナリデータ
+        filename (str): Slack上でのファイル名
+        title (str): Slack上でのファイルタイトル
+        initial_comment (str, optional): ファイルと一緒に投稿するコメント。
+                                       Android版Slackのバグ対策として `.` を推奨。
+    
+    Returns:
+        bool: アップロード成功ならTrue
+    """
     try:
         # files_upload_v2 は initial_comment で mrkdwn が効かない場合があるため
         # 明示的にテキストメッセージとして送るか、Block Kitを使うのが確実だが
@@ -314,7 +345,25 @@ def remove_html_tags(text):
     return text.strip()
 
 def process_timeline(session, client, timeline_data):
-    """タイムラインデータを処理してSlackに投稿する"""
+    """
+    タイムラインデータを処理してSlackに投稿する。
+    
+    取得したタイムラインデータ（JSON）を解析し、未読のアイテムをSlackに投稿する。
+    
+    ロジック:
+    1. Slackから既読IDリストを取得し、重複を排除
+    2. タイムラインを古い順（reversed）に処理
+    3. 投稿タイプ（kind）に応じて処理を分岐
+       - activities: 日々の様子（写真付き）。写真は1枚ずつアップロード。
+       - topics: お知らせ（PDFなど）。PDFは画像化して全ページアップロード。
+    4. ファイル名には日時プレフィックスを付与してソート可能にする
+    5. Android版Slack対策として、キャプションがない画像には `.` を付与
+    
+    Args:
+        session (requests.Session): Codmonログイン済みセッション
+        client (WebClient): Slack WebClient
+        timeline_data (dict): Codmonから取得したタイムラインデータ
+    """
     if not timeline_data or 'data' not in timeline_data:
         return
 
@@ -458,7 +507,43 @@ if __name__ == "__main__":
     # 引数解析
     parser = argparse.ArgumentParser(description='Codmon Timeline Fetcher')
     parser.add_argument('--days', type=int, default=3, help='Number of days to fetch (default: 3)')
+    parser.add_argument('--test', action='store_true', help='Test connection settings only (no post)')
     args = parser.parse_args()
+
+    if args.test:
+        logger.info("接続テストモード: 設定の確認を行います（投稿は行いません）")
+        
+        # 1. Slack接続確認 (auth.test)
+        if not SLACK_BOT_TOKEN or not SLACK_CHANNEL_ID:
+            logger.error("❌ Slack設定不足: .envを確認してください")
+            exit(1)
+            
+        try:
+            client = WebClient(token=SLACK_BOT_TOKEN)
+            auth_res = client.auth_test()
+            logger.info(f"✅ Slack接続 OK (Bot User: {auth_res['user']})")
+        except SlackApiError as e:
+            logger.error(f"❌ Slack接続 NG: {e.response['error']}")
+            exit(1)
+
+        # 2. Codmonログイン確認
+        session = login_codmon()
+        if session:
+            logger.info("✅ Codmonログイン OK")
+            
+            # 3. 施設一覧取得確認
+            services_data = get_services(session)
+            if services_data and "data" in services_data:
+                count = len(services_data["data"]) if isinstance(services_data["data"], dict) else 0
+                logger.info(f"✅ 施設一覧取得 OK ({count}件の施設を検出)")
+            else:
+                logger.warning("⚠️ 施設一覧取得 NG またはデータなし")
+        else:
+            logger.error("❌ Codmonログイン NG")
+            exit(1)
+            
+        logger.info("🎉 設定確認完了: 正常に接続できています")
+        exit(0)
 
     logger.info(f"処理を開始します (対象期間: {args.days}日間)")
     
