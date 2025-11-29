@@ -81,6 +81,10 @@ python main.py
   ```bash
   python main.py --days 7
   ```
+- `--test`: 接続テストモード。SlackとCodmonへのログイン確認のみ行い、投稿はしません。
+  ```bash
+  python main.py --test
+  ```
 
 ---
 
