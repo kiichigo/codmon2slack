@@ -9,8 +9,7 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write # リポジトリへの書き込み権限（seen_ids.txt更新用）
+    # permissions: contents: write は不要になったため削除（デフォルトのread権限で十分）
 
     steps:
       - name: Checkout code
