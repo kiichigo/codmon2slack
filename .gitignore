@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.py[cod]
+data/
+*.log
+seen_ids.txt
+devwork/
+.vscode/
