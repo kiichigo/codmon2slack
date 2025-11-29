@@ -31,28 +31,60 @@ SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_CHANNEL_ID = os.getenv("SLACK_CHANNEL_ID")
 CODMON_EMAIL = os.getenv("CODMON_EMAIL")
 CODMON_PASSWORD = os.getenv("CODMON_PASSWORD")
-SEEN_IDS_FILE = "seen_ids.txt"
 
 
-def load_seen_ids():
-    """処理済みのIDリストを読み込む"""
-    if os.path.exists(SEEN_IDS_FILE):
-        try:
-            with open(SEEN_IDS_FILE, "r", encoding="utf-8") as f:
-                return set(line.strip() for line in f)
-        except Exception as e:
-            logger.error(f"IDファイル読み込みエラー: {e}")
-            return set()
-    return set()
-
-
-def save_seen_id(item_id):
-    """処理済みのIDを保存する"""
+def fetch_seen_ids_from_slack(client):
+    """
+    Slackの履歴から処理済みのIDリストを取得する。
+    
+    重複投稿を防ぐため、Slackチャンネルの直近の投稿を確認し、
+    既に投稿されている記事のIDを収集する。
+    
+    ロジック:
+    1. 指定チャンネルの直近100件のメッセージを取得 (conversations_history)
+    2. 各メッセージの本文(text)およびファイルコメント(initial_comment)を検査
+    3. 正規表現 r'\(ID:\s*(\d+)\)' にマッチするIDを抽出
+    
+    Returns:
+        set: 既読（投稿済み）の記事IDの集合
+    """
+    seen_ids = set()
     try:
-        with open(SEEN_IDS_FILE, "a", encoding="utf-8") as f:
-            f.write(f"{item_id}\n")
+        # 直近100件のメッセージを取得
+        response = client.conversations_history(channel=SLACK_CHANNEL_ID, limit=100)
+        if not response['ok']:
+            logger.error(f"Slack履歴取得失敗: {response['error']}")
+            return seen_ids
+
+        messages = response['messages']
+        # メッセージ内の (ID: xxxxx) を検索
+        pattern = re.compile(r'\(ID:\s*(\d+)\)')
+        
+        for msg in messages:
+            text = msg.get('text', '')
+            # テキスト内のIDを探す
+            match = pattern.search(text)
+            if match:
+                seen_ids.add(match.group(1))
+            
+            # ファイルのコメント（initial_comment）もチェック
+            if 'files' in msg:
+                for file in msg['files']:
+                    if 'initial_comment' in file:
+                        comment = file['initial_comment'].get('comment', '')
+                        match = pattern.search(comment)
+                        if match:
+                            seen_ids.add(match.group(1))
+
+        logger.info(f"Slackから取得した既読ID数: {len(seen_ids)}")
+        return seen_ids
+
+    except SlackApiError as e:
+        logger.error(f"Slack APIエラー: {e.response['error']}")
+        return seen_ids
     except Exception as e:
-        logger.error(f"ID保存エラー: {e}")
+        logger.error(f"既読ID取得エラー: {e}")
+        return seen_ids
 
 
 def download_content(session, url):
@@ -286,7 +318,8 @@ def process_timeline(session, client, timeline_data):
     if not timeline_data or 'data' not in timeline_data:
         return
 
-    seen_ids = load_seen_ids()
+    # Slackから既読IDを取得
+    seen_ids = fetch_seen_ids_from_slack(client)
     items = timeline_data['data']
     
     # 古い順に処理するために逆順にする
@@ -322,8 +355,8 @@ def process_timeline(session, client, timeline_data):
                     else:
                         file_date_prefix = f"{clean_date}_"
                 
-                # まずタイトルと本文を投稿
-                main_message = f"{display_date}\n📸 *{title}*\n{overview}"
+                # まずタイトルと本文を投稿 (IDを埋め込む)
+                main_message = f"{display_date}\n📸 *{title}*\n{overview}\n\n(ID: {item_id})"
                 client.chat_postMessage(channel=SLACK_CHANNEL_ID, text=main_message)
                 
                 for i, photo in enumerate(photos):
@@ -370,38 +403,21 @@ def process_timeline(session, client, timeline_data):
                 # 単純にテキストを送る場合はmrkdwn=Trueが必要（デフォルトでTrueだが念のため）
                 # ただし、upload_file_to_slackのinitial_commentはmrkdwnが効くはず
                 
-                message = f"{display_date}\n📢 *{title}*\n\n{content_text}"
+                # IDを埋め込む
+                message = f"{display_date}\n📢 *{title}*\n\n{content_text}\n\n(ID: {item_id})"
                 
                 if file_url:
                     # 相対パスの場合は補完
                     if file_url.startswith('/'):
-                        # /api/v2/parent/topics/{id}/file のようなAPIエンドポイントの場合がある
-                        # この場合、API経由でファイルを取得する必要があるかもしれない
-                        # しかし、通常は parents.codmon.com 配下の静的ファイルか、リダイレクトされるURL
-                        full_url = f"https://parents.codmon.com{file_url}"
+                        # APIエンドポイント(/api/...)も静的ファイル(/codmon/...)も
+                        # ps-api.codmon.com ドメインで取得する方が確実
+                        full_url = f"https://ps-api.codmon.com{file_url}"
                     else:
                         full_url = file_url
-                    
-                    # API経由での取得が必要なケース（file_urlがAPIのエンドポイントっぽい場合）
-                    # 例: /api/v2/parent/topics/149673803/file
-                    if "/api/" in full_url:
-                        # APIエンドポイントの場合は、ps-api.codmon.com を使うべきかもしれない
-                        # 現在の full_url は https://parents.codmon.com/api/... となっている
-                        # これを https://ps-api.codmon.com/api/... に置換してみる
-                        full_url = full_url.replace("https://parents.codmon.com/api/", "https://ps-api.codmon.com/api/")
-                        logger.info(f"APIエンドポイントを検出。URLを置換しました: {full_url}")
-                    
-                    # ユーザーから提供された情報に基づく修正:
-                    # ブラウザでは https://ps-api.codmon.com/codmon/1183/topics/xxxx.pdf?PHPSESSID=... のようなURLで取得できている
-                    # API (/api/v2/parent/topics/{id}/file) を叩くと、上記のような実ファイルURLへのリダイレクト(302)が返ってくる可能性がある
-                    # requestsはデフォルトでリダイレクトを追跡するが、Cookie (PHPSESSID) が重要かもしれない
-                    
-                    # 2025-11-28 追記:
-                    # parents.codmon.com ドメインのファイルURLの場合も、ps-api.codmon.com に置換してみる
-                    # ログによると https://parents.codmon.com/codmon/... というURLでHTMLが返ってきている
-                    if "parents.codmon.com/codmon/" in full_url:
-                        full_url = full_url.replace("parents.codmon.com", "ps-api.codmon.com")
-                        logger.info(f"parentsドメインをps-apiドメインに置換しました: {full_url}")
+                        # 絶対パスの場合でも parents.codmon.com が含まれていたら ps-api に置換する
+                        if "parents.codmon.com" in full_url:
+                            full_url = full_url.replace("parents.codmon.com", "ps-api.codmon.com")
+                            logger.info(f"parentsドメインをps-apiドメインに置換しました: {full_url}")
 
                     content = download_content(session, full_url)
                     if content:
@@ -425,14 +441,14 @@ def process_timeline(session, client, timeline_data):
                                     img_data,
                                     f"{filename}_page_{i+1}.jpg",
                                     f"{title} (ページ {i+1})",
-                                    ""  # 2枚目以降はコメントなし
+                                    "."  # Android対策でドットを入れる
                                 )
                 else:
                     # ファイルがない場合はテキスト通知のみ
                     client.chat_postMessage(channel=SLACK_CHANNEL_ID, text=message)
 
-            # 処理完了したらIDを保存
-            save_seen_id(item_id)
+            # 処理完了したらIDを保存 (Slack投稿自体が保存になるのでファイル書き込みは不要)
+            # save_seen_id(item_id)
             
         except Exception as e:
             logger.error(f"アイテム処理エラー {item_id}: {e}")

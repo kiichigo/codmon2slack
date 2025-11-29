@@ -32,7 +32,8 @@ def clean_channel_history():
             logger.info("削除対象のメッセージはありません。")
             return
 
-        logger.info(f"{len(messages)} 件のメッセージが見つかりました。削除を開始します...")
+        num_messages = len(messages)
+        logger.info(f"{num_messages} 件のメッセージが見つかりました。削除を開始します...")
 
         count = 0
         for msg in messages:
@@ -41,7 +42,7 @@ def clean_channel_history():
             try:
                 # メッセージを削除
                 client.chat_delete(channel=SLACK_CHANNEL_ID, ts=ts)
-                logger.info(f"削除成功: {ts}")
+                logger.info(f"削除成功: [{count + 1}/{num_messages}] {ts}")
                 count += 1
                 
                 # APIレートリミット回避のために少し待機
