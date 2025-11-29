@@ -1,0 +1,44 @@
+name: Run Codomon Fetcher
+
+on:
+  schedule:
+    # 毎日 18:00 JST (UTC 09:00) に実行
+    - cron: '0 9 * * *'
+  workflow_dispatch: # 手動実行ボタンも有効化
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # リポジトリへの書き込み権限（seen_ids.txt更新用）
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run script
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+          CODMON_EMAIL: ${{ secrets.CODMON_EMAIL }}
+          CODMON_PASSWORD: ${{ secrets.CODMON_PASSWORD }}
+        run: python main.py
+
+      - name: Commit and push changes
+        run: |
+          git config --global user.name 'GitHub Action'
+          git config --global user.email 'action@github.com'
+          # seen_ids.txt が存在しない場合は作成（初回用）
+          touch seen_ids.txt
+          git add seen_ids.txt
+          # 変更がある場合のみコミット
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update seen_ids.txt [skip ci]" && git push)
