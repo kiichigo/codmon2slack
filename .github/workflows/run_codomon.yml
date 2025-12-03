@@ -30,4 +30,4 @@ jobs:
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
           CODMON_EMAIL: ${{ secrets.CODMON_EMAIL }}
           CODMON_PASSWORD: ${{ secrets.CODMON_PASSWORD }}
-        run: python main.py
+        run: python codmon_to_slack.py
