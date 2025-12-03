@@ -1,8 +1,24 @@
-$TaskName = "CodmonSlackNotifier"
-$WorkDir = "D:\tkeita\tkeita\codomon"
-# pythonw.exe を使うと黒い画面が出ずにバックグラウンドで実行されます
-$PythonPath = "$WorkDir\.venv\Scripts\pythonw.exe"
-$ScriptPath = "$WorkDir\main.py"
+# パラメータでパスを上書きできるようにし、既定値はスクリプト配置フォルダを使用
+param(
+    [string]$TaskName = "CodmonSlackNotifier",
+    [string]$WorkDir = $PSScriptRoot,
+    [string]$PythonPath,
+    [string]$ScriptPath
+)
+
+if (-not $PythonPath) {
+    # pythonw.exe を使うと黒い画面が出ずにバックグラウンドで実行されます
+    $PythonPath = Join-Path -Path $WorkDir -ChildPath ".venv\Scripts\pythonw.exe"
+}
+
+if (-not $ScriptPath) {
+    $ScriptPath = Join-Path -Path $WorkDir -ChildPath "codmon_to_slack.py"
+}
+
+Write-Host "TaskName : $TaskName"
+Write-Host "WorkDir  : $WorkDir"
+Write-Host "Python   : $PythonPath"
+Write-Host "Script   : $ScriptPath"
 
 # アクション: Pythonスクリプトを実行
 $Action = New-ScheduledTaskAction -Execute $PythonPath -Argument $ScriptPath -WorkingDirectory $WorkDir
