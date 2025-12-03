@@ -24,7 +24,7 @@ Slackに転送・通知するスクリプト。
 - Android版Slackの表示バグ対策（ドット挿入）
 
 Usage:
-    python main.py [--days 3]
+    python codmon_to_slack.py [--days 3]
 """
 
 # ログ設定
@@ -47,6 +47,52 @@ SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_CHANNEL_ID = os.getenv("SLACK_CHANNEL_ID")
 CODMON_EMAIL = os.getenv("CODMON_EMAIL")
 CODMON_PASSWORD = os.getenv("CODMON_PASSWORD")
+
+ERROR_MARKER_PREFIX = "⚠️ Codmon接続エラー"
+RECOVERY_INSTRUCTION = "Slackに任意のメッセージを投稿すると自動実行が再開します。"
+
+
+def is_error_marker_message(text):
+    """Slackメッセージがフェイルセーフ用のエラーマーカーか判定"""
+    if not text:
+        return False
+    return text.strip().startswith(ERROR_MARKER_PREFIX)
+
+
+def post_slack_error_marker(client, detail):
+    """Slackにエラーマーカーを投稿し、ユーザーに復旧操作を促す"""
+    if not client:
+        return
+
+    message = f"{ERROR_MARKER_PREFIX} {detail}\n{RECOVERY_INSTRUCTION}"
+    try:
+        client.chat_postMessage(channel=SLACK_CHANNEL_ID, text=message)
+        logger.warning("Slackにエラーマーカーを投稿しました。ユーザー操作待ちで停止します。")
+    except SlackApiError as e:
+        logger.error(f"Slackアラート投稿失敗: {e.response['error']}")
+
+
+def slack_is_in_error_state(client):
+    """Slackの最新メッセージがエラーマーカーかどうかを確認"""
+    try:
+        response = client.conversations_history(channel=SLACK_CHANNEL_ID, limit=1)
+        if not response.get('ok'):
+            logger.error(f"Slack履歴確認失敗: {response.get('error')}")
+            return False
+        messages = response.get('messages', [])
+        if not messages:
+            return False
+        latest_text = messages[0].get('text', '')
+        if is_error_marker_message(latest_text):
+            logger.warning("Slack最新投稿がエラーマーカーのため、Codmonへの接続をスキップします。")
+            return True
+        return False
+    except SlackApiError as e:
+        logger.error(f"Slack APIエラー (エラーステータス確認): {e.response['error']}")
+        return False
+    except Exception as e:
+        logger.error(f"Slackエラーステータス確認エラー: {e}")
+        return False
 
 
 def fetch_seen_ids_from_slack(client):
@@ -555,32 +601,44 @@ if __name__ == "__main__":
         exit(1)
         
     client = WebClient(token=SLACK_BOT_TOKEN)
+
+    # Slack側でエラー状態が続いている場合はCodmonへ接続しない
+    if slack_is_in_error_state(client):
+        logger.warning("直前のSlack投稿がエラーマーカーだったため、処理を中断します。Slackに任意のメッセージを投稿して解除してください。")
+        exit(1)
     
     # 2. Codmonログイン
     session = login_codmon()
+    if not session:
+        post_slack_error_marker(client, "Codmonへのログインに失敗しました。API仕様変更やメンテナンスの可能性があります。")
+        exit(1)
     
-    if session:
-        # 3. 施設一覧取得
-        services_data = get_services(session)
+    # 3. 施設一覧取得
+    services_data = get_services(session)
+    if not services_data:
+        post_slack_error_marker(client, "施設一覧の取得に失敗しました。Codmon APIの応答を確認してください。")
+        exit(1)
+
+    if isinstance(services_data, dict) and "data" in services_data:
+        services_dict = services_data["data"]
         
-        if services_data:
-            if isinstance(services_data, dict) and "data" in services_data:
-                services_dict = services_data["data"]
+        if isinstance(services_dict, dict):
+            for service_id, service in services_dict.items():
+                service_name = service.get("name", "不明な施設")
+                logger.info(f"施設: {service_name} のタイムラインを確認中...")
                 
-                if isinstance(services_dict, dict):
-                    for service_id, service in services_dict.items():
-                        service_name = service.get("name", "不明な施設")
-                        logger.info(f"施設: {service_name} のタイムラインを確認中...")
-                        
-                        # 4. タイムライン取得
-                        timeline_data = get_timeline(session, service_id, days=args.days)
-                        
-                        # 5. タイムライン処理
-                        process_timeline(session, client, timeline_data)
-                        
-                else:
-                    logger.warning(f"想定外のデータ構造です: {type(services_dict)}")
-            else:
-                logger.warning("施設情報が見つかりませんでした")
+                # 4. タイムライン取得
+                timeline_data = get_timeline(session, service_id, days=args.days)
+                if not timeline_data:
+                    post_slack_error_marker(client, f"施設『{service_name}』のタイムライン取得に失敗しました。")
+                    exit(1)
+                
+                # 5. タイムライン処理
+                process_timeline(session, client, timeline_data)
+                
+        else:
+            logger.warning(f"想定外のデータ構造です: {type(services_dict)}")
+    else:
+        logger.warning("施設情報が見つかりませんでした")
 
     logger.info("処理終了")
