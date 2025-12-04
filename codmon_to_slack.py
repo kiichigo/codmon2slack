@@ -105,7 +105,7 @@ def fetch_seen_ids_from_slack(client):
     ロジック:
     1. 指定チャンネルの直近100件のメッセージを取得 (conversations_history)
     2. 各メッセージの本文(text)およびファイルコメント(initial_comment)を検査
-    3. 正規表現 r'\(ID:\s*(\d+)\)' にマッチするIDを抽出
+    3. 正規表現 r'\\(ID:\\s*(\\d+)\\)' にマッチするIDを抽出
     
     Returns:
         set: 既読（投稿済み）の記事IDの集合
@@ -180,7 +180,7 @@ def convert_pdf_to_images(pdf_content):
             # 解像度を指定 (zoom=2くらいが適当。72dpi * 2 = 144dpi)
             # alpha=Falseを指定して背景を白にする（透過対策）
             pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-            images.append(pix.tobytes("jpg")) # JPGとして取得
+            images.append(pix.tobytes("jpg"))  # JPGとして取得
         return images
     except Exception as e:
         logger.error(f"PDF変換エラー: {e}")
@@ -390,6 +390,7 @@ def remove_html_tags(text):
     
     return text.strip()
 
+
 def process_timeline(session, client, timeline_data):
     """
     タイムラインデータを処理してSlackに投稿する。
@@ -416,18 +417,29 @@ def process_timeline(session, client, timeline_data):
     # Slackから既読IDを取得
     seen_ids = fetch_seen_ids_from_slack(client)
     items = timeline_data['data']
-    
-    # 古い順に処理するために逆順にする
-    for item in reversed(items):
+
+    # Codmon側のタイムラインは「新しい順」で並ぶ前提なので、
+    # 既読IDに当たるまで新規アイテムを収集し、最後に古い順へ反転して投稿する。
+    items_to_post = []
+
+    for item in items:
         item_id = str(item.get('id'))
         kind = item.get('timeline_kind')
         
         if item_id in seen_ids:
-            continue
+            logger.info(f"既読ID {item_id} に到達したため残りはスキップします。")
+            break
             
         if kind == 'responses':
             # 欠席連絡などはスキップ
             continue
+
+        items_to_post.append(item)
+
+    # 収集した未読アイテムを古い順で処理
+    for item in reversed(items_to_post):
+        item_id = str(item.get('id'))
+        kind = item.get('timeline_kind')
             
         logger.info(f"新規アイテム処理中: {item.get('title')} ({kind})")
         
