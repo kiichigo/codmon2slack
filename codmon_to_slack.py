@@ -118,7 +118,12 @@ def fetch_seen_ids_from_slack(client):
             logger.error(f"Slack履歴取得失敗: {response['error']}")
             return seen_ids
 
-        messages = response['messages']
+        messages = response.get('messages', [])
+        has_more = response.get('has_more', None)
+        next_cursor = response.get('response_metadata', {}).get('next_cursor', '')
+        logger.info(
+            f"Slack履歴取得: {len(messages)}件 (limit=100, has_more={has_more}, next_cursor={'あり' if next_cursor else 'なし'})"
+        )
         # メッセージ内の (ID: xxxxx) を検索
         pattern = re.compile(r'\(ID:\s*(\d+)\)')
         
@@ -466,6 +471,8 @@ def process_timeline(session, client, timeline_data):
                 # 縦の長さを節約するため、日付の後ろにIDを表示
                 main_message = f"{display_date} (ID: {item_id})\n📸 *{title}*\n{overview}"
                 client.chat_postMessage(channel=SLACK_CHANNEL_ID, text=main_message)
+
+                posted_any_photo = False
                 
                 for i, photo in enumerate(photos):
                     photo_url = photo.get('url')
@@ -493,8 +500,14 @@ def process_timeline(session, client, timeline_data):
                                 safe_filename,
                                 caption
                             )
+                            posted_any_photo = True
                             # 連続投稿による表示乱れを防ぐために少し待つ
                             time.sleep(1)
+
+                # 画像が複数投稿に分かれるため、最後にマーカー専用投稿を追加する
+                # Slack履歴取得がlimit未満でも直近でID検出できるようにする
+                if posted_any_photo:
+                    client.chat_postMessage(channel=SLACK_CHANNEL_ID, text=f"(ID: {item_id})")
             
             elif kind == 'topics':
                 # お知らせ（PDFなど）
@@ -544,14 +557,20 @@ def process_timeline(session, client, timeline_data):
                         if filename.lower().endswith('.pdf'):
                             logger.info(f"PDFを展開して画像を抽出中: {filename}")
                             pdf_images = convert_pdf_to_images(content)
+                            posted_any_page = False
                             for i, img_data in enumerate(pdf_images):
-                                upload_file_to_slack(
+                                ok = upload_file_to_slack(
                                     client,
                                     img_data,
                                     f"{filename}_page_{i+1}.jpg",
                                     f"{title} (ページ {i+1})",
                                     "."  # Android対策でドットを入れる
                                 )
+                                posted_any_page = posted_any_page or ok
+
+                            # ページ画像はドット投稿が続くため、最後にマーカー専用投稿を追加する
+                            if posted_any_page:
+                                client.chat_postMessage(channel=SLACK_CHANNEL_ID, text=f"(ID: {item_id})")
                 else:
                     # ファイルがない場合はテキスト通知のみ
                     client.chat_postMessage(channel=SLACK_CHANNEL_ID, text=message)
